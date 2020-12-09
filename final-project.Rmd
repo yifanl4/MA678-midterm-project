@@ -1,0 +1,256 @@
+---
+title: "Google Play Store Apps Analysis "
+author: "Yifan Liu"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+urlcolor: BrickRed
+---
+
+```{r library, include = FALSE, message = FALSE}
+library("tidyverse")
+library("caret")
+library("knitr")
+library("kableExtra")
+library("rsample")
+library("lme4")
+library("arm")
+library("gbm")
+library("randomForest")
+library("class")
+```
+
+```{r, echo = F}
+library("knitr")
+opts_chunk$set(tidy.opts=list(width.cutoff=80),tidy=TRUE)
+```
+
+***
+
+# Abstract
+
+>Statistical learning methods were applied to the Google Play Store App Score dataset on the web. iTunes App Store deploys a nicely indexed appendix-like structure to allow for simple and easy web scraping. The Play Store apps data have enormous potential to drive app-making businesses to success. A variety of learning techniques were explored and validated.
+
+***
+
+# Introduction
+
+Just as App Store to the iOS system, Google Play serves as the official app store for the Android operating system, allowing users to browse and download applications developed with the Android software development kit and published through Google. Mobile applications, available through Google Play either free of charge or at a cost, can be downloaded directly on an Android device through the Play Store mobile app or by deploying the application to a device from the Google Play website. 
+
+Since the rating system developed by Google serves an important role in customer decisions, it would be beneficial to have access to a tool that can predict the overall user rating of their products. Because of the large number of users of Android operating system devices, there is likely a significant variance in the overall user ratings. The goal of my study is to examine if statistical models based on the information presented on Google Play are capable of providing accurate predictions on the published rating of Apps. 
+
+Google Play store apps data originates from the Google Play Store.[^1] Data includes information that scraped 10K Play Store apps for analyzing the Android market. The data was accessed via the Kaggle. To test the accuracy, I am going to predict the score of Google apps in the Google Play Store based on the information data set provided and check the test RSME of my models. 
+
+***
+
+# Method
+
+## Data
+
+The dataset was originally collected from the Google Play Store and can be accessed through Kaggle.[^2] According to research, the Google Play store had over 82 billion app downloads in 2016 and has reached over 3.5 million apps published in 2017. Among numerous applications, customers would rely on the rating system developed by Google to select which they want to use. Thus for those mobile application developers, it would be beneficial to have access to a tool that is able to predict the overall user rating of their products. 
+
+The dataset I am using for this project has a total of 10842 observations and 13 variables. The first column is the name of the App I am trying to predict. My response variable is "Rating," a numeric variable ranged from 1 to 5. There exist missing value for my response variable. One of the reasons is that some new apps am still lack of rating. I will use the rest of the 11 variables to build my statistical models. 
+
+Some exploratory data analysis can be found in the appendix.
+
+```{r load data, message = FALSE, include=FALSE}
+data = read.csv("googleplaystore.csv")
+```
+
+Since the dataset has different unit or outlier, I clean my dataset for future analysis.
+
+```{r clean data, include=FALSE}
+#remove all nas
+apps = na.omit(data)
+
+#data size clean
+app_m = apps[which(str_detect(string = apps$Size, pattern = "[0-9]+M") == TRUE),]
+app_m$Size = str_replace_all(app_m$Size, "M", "")
+app_m$Size = as.numeric(app_m$Size) * 1000
+app_k = apps[which(str_detect(string = apps$Size, pattern = "[0-9]+k") == TRUE),]
+app_k$Size = str_replace_all(app_k$Size, "k", "")
+app_k$Size = as.numeric(app_k$Size)
+apps1 = rbind(app_m, app_k)
+
+#factor data
+apps1$Category = as.factor(apps1$Category)
+apps1$Reviews = as.numeric(apps1$Reviews)
+apps1$Installs = as.numeric(str_remove_all(apps1$Installs, "[,+]"))
+apps1$Content.Rating = as.factor(apps1$Content.Rating)
+apps1$App = as.factor(apps1$App)
+apps1$Last.Updated = as.factor(apps1$Last.Updated)
+apps1$Type = ifelse(apps1$Type == "Free", 0, 1)
+```
+
+```{r split - data, include=FALSE}
+set.seed(42)
+# test-train split
+trn_idx = sample(nrow(apps1), size = 0.7 * nrow(apps))
+apps1_trn = apps1[trn_idx,]
+apps1_tst = apps1[-trn_idx,]
+```
+
+## Model
+
+In order to predict the rating for Google Play Store Apps rating, several modeling strategies were explored. Models using the numeric response variable, which range from 0 to 5, considering the rating of apps. 
+
+First, multilevel linear model was considered: 
+
+```{r, include=FALSE}
+set.seed(42)
+```
+
+```{r, include=FALSE}
+m1 = lmer(Rating ~ I(Reviews/1e+08) + I(Size/1e+06) + I(Installs/1e+10) + (1|Content.Rating), data = apps1_trn)
+```
+
+```{r, echo=FALSE, fig.width=5, fig.height=3}
+plot(m1)
+```
+
+After checking the fitted value plot from above, I can tell that the trend in not roughly flat and the fitted values are not evenly spread around the center line. So the linearity and the constant variance assumptions are not satisfied. Therefore, I turn to classification modeling strategies for prediction. 
+
+“Three” classification modeling strategies were considered:
+
+- Random Forest (using package `randomForest` functionality) for the categorical outcome through the use of the `randomForest` package.
+
+```{r, include=FALSE}
+set.seed(42)
+```
+
+```{r model, include = FALSE, message = FALSE, warning = FALSE}
+rf_mod = train(
+  Rating ~ Reviews + Size + Content.Rating + Installs,
+  data = apps1_trn,
+  method = "rf",
+  trControl = trainControl(method = "oob")
+)
+```
+
+- kNN model, through the use of the `class` package.
+
+```{r, include=FALSE}
+set.seed(42)
+```
+
+```{r cv control, include=FALSE}
+cv = trainControl(method = "CV",
+                  number = 5)
+```
+
+```{r knn, include = FALSE, message = FALSE, warning = FALSE}
+knn_mod = train(
+  Rating ~ Reviews + Size + Content.Rating + Installs,
+  data = apps1_trn,
+  method = "knn",
+  trControl = cv
+)
+```
+
+- Generalized Boosted Regression model, through the use of the `gbm` package.
+
+```{r, include=FALSE}
+set.seed(42)
+```
+
+```{r gbm, include = FALSE, message = FALSE, warning = FALSE}
+gbm_mod = train(
+  Rating ~ Reviews + Size + Content.Rating + Installs,
+  data = apps1_trn,
+  method = "gbm",
+  trControl = cv
+)
+```
+
+Additional modeling techniques were considered but removed from this analysis due to length.
+
+## Evaluation
+
+Models were ultimately evaluated based on their ability to accurately predicted Google Play Store Apps rating. For all models, predictions of levels 0 to 5 indicate the rating of the rating.
+
+```{r result, include=FALSE}
+RMSE(predict(rf_mod, apps1_tst), apps1_tst$Rating)
+RMSE(predict(knn_mod, apps1_tst), apps1_tst$Rating)
+RMSE(predict(gbm_mod, apps1_tst), apps1_tst$Rating)
+```
+
+# Result
+
+After applying the modeling technique, I have a Random Forest model featuring five most influential variables with a RMSE of 0.53, a K-nearest Neighbors Model featuring same variables with RMSE of 0.54, and Generalized Boosted Regression with RMSE of 0.52.
+
+```{r numeric-results, echo = FALSE}
+results = tibble(
+  "Model" = c(
+    "Random Forest",
+    "K-nearest Neighbors",
+    "Generalized Boosted Regression"
+  ),
+  "RMSE" = c(
+    RMSE(predict(rf_mod, apps1_tst), apps1_tst$Rating),
+    RMSE(predict(knn_mod, apps1_tst), apps1_tst$Rating),
+    RMSE(predict(gbm_mod, apps1_tst), apps1_tst$Rating)
+  )
+)
+
+results %>%
+  kable (digits = 4) %>%
+  kable_styling ("striped", full_width = FALSE)
+```
+
+## Discussion
+
+To sum up, according to my results, the Generalized Boosted Regression model has the "best" performance because of the loIst RMSE. With relatively good performance, the Random Forest model takes much longer to run compared to the Generalized Boosted Regression model. So I am less likely to choose this model because of loIr efficiency. In addition, I built a k-Nearest Neighbor model for predicting the Google Play Store Apps rating. HoIver, the result is relatively low compared to the other two models. Based on the result, Generalized Boosted Regression(gbm) algorithm clearly should be prioritized over KNN and Random Forest in predicting the rating of apps in the Google Play Store. Besides, I also explore the multilevel linear model with varying-intercept, hoIver, the validation result indicates that such model does not work Ill in this situation. 
+
+My goal is to examine if statistical models based on the information presented on Google Play are capable of providing accurate predictions on the published rating of Apps. Considering the range of my response variable "Rating," with 50% ratings between 4 to 4.5 and an average rating of 4.19, I could reasonably suggest that even the "best" model is insignificant in predicting the actual rating of Apps.  Based on my results, I notified that the prediction from variables has a slight difference with the actual rating from the Google system. Since the actual rating on the Google system is rated by actual users who may be biased, my predictions are based on the attributes of the Apps.
+
+***
+
+# Appendix
+## Data Dictionary
+
+```{r, include = FALSE}
+names(apps)
+```
+
+- App: Application name
+- Category: Category the app belongs to
+- Rating: Overall user rating of the app (as when scraped)
+- Rating: Overall user rating of the app (as when scraped)
+- Reviews: Number of user reviews for the app (as when scraped)
+- Size: Size of the app (as when scraped)
+- Installs: Number of user downloads/installs for the app (as when scraped)
+- Type: Paid or Free
+- Price: Price of the app (as when scraped)
+- Content Rating: Age group the app is targeted at Children / Mature 21+ / Adult
+- Genres: An app can belong to multiple genres (apart from its main category). For eg, a musical family game will belong to Music, Game, Family genres.
+- Last Updated: Date when the app was last updated on Play Store (as when scraped)
+- Current Ver: Current version of the app available on Play Store (as when scraped)
+- Android Ver: Min required Android version (as when scraped)
+
+## EDA
+
+```{r, warning = FALSE, message = FALSE, echo=FALSE}
+ggplot(aes(x = Category), data = apps1_trn) +
+  geom_bar(fill = 'royalblue2') +
+  coord_flip() +
+  ggtitle("Categories")
+```
+
+```{r, warning = FALSE, message = FALSE, echo=FALSE}
+ggplot(aes(x = Rating), data = apps1_trn) +
+  geom_histogram(binwidth = 0.1, fill = 'royalblue2') +
+  xlim(1, 5) +
+  ggtitle('Rating')
+```
+
+```{r, warning = FALSE, message = FALSE, echo=FALSE}
+ggplot(aes(x = Reviews), data = apps1_trn) +
+  geom_histogram(fill = 'royalblue2') +
+  scale_x_log10() +
+  ggtitle('Reviews')
+```
+
+## Reference
+1: [Google Play](https://play.google.com/store?hl=en_US)    
+2: [Kaggle: Google Play Store Apps](https://www.kaggle.com/lava18/google-play-store-apps)  
+
+
